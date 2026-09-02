@@ -1,0 +1,42 @@
+# See https://pre-commit.com for more information
+
+# The project requires Python >=3.10 (see pyproject.toml), and so does the mypy
+# pinned below. Without this, pre-commit builds hook envs against whatever
+# `python3` it finds first, which may be older.
+default_language_version:
+  python: python3.11
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=512"]
+      - id: check-case-conflict
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff-check
+        types_or: [python, pyi]
+        args: [--fix]
+      - id: ruff-format
+        types_or: [python, pyi]
+
+  - repo: local
+    hooks:
+      # Run in the project environment rather than an isolated hook venv: mypy
+      # follows the real imports, and torch / pytorch-lightning are far too heavy
+      # to reinstall as `additional_dependencies`. Needs `pip install -e .` plus
+      # mypy, pandas-stubs and types-PyYAML - all in the dev dependency group.
+      - id: mypy
+        name: mypy
+        entry: mypy
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false

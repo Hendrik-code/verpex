@@ -1,0 +1,101 @@
+# ---------------------------------------------------------------------------
+# Machine-specific configuration (NEVER commit)
+# ---------------------------------------------------------------------------
+config/paths.yaml
+.env
+
+# ---------------------------------------------------------------------------
+# Data, results and model artefacts (NEVER commit)
+# Research outputs derived from clinical data must stay out of the repository.
+# ---------------------------------------------------------------------------
+*.nii
+*.nii.gz
+*.ckpt
+*.pt
+*.pth
+*.npz
+*.mrk.json
+*.dcm
+*.nrrd
+master_df*.csv
+# Anchored to the repository root with a leading slash. Without it, a bare
+# `data/` would also match the `verpex/data/` package directory, hiding real
+# source files from git and from tools that honour .gitignore (ruff).
+/data/
+/datasets/
+/cutouts/
+/cutout-folder/
+/trainings/
+/predictions/
+/results/
+/logs/
+/lightning_logs/
+/runs/
+/k_fold/
+/data_analysis/
+/experiments/
+
+# Legacy research tree: superseded directories that may still exist on disk in a
+# working checkout but are not part of the package. Never commit them. These were
+# written for the old `src/` layout; kept unanchored so they match either way.
+dataset/
+data_analysis_correction/
+verse/
+poi_to_mrk.py
+
+# Personal / scratch working directories from the original research tree
+hendrik/
+myelom/
+miccai_study/
+archive/
+notebooks/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+.installed.cfg
+poetry.lock
+
+# ---------------------------------------------------------------------------
+# Tooling / environments
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.prof
+*.log
+
+# ---------------------------------------------------------------------------
+# Editors / OS / assistant tooling
+# ---------------------------------------------------------------------------
+.vscode/
+.claude/
+CLAUDE.md
+.cursor/
+.aider*
+.github/copilot-instructions.md
+.idea/
+.ipynb_checkpoints
+.DS_Store

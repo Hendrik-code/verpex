@@ -1,0 +1,150 @@
+[tool.poetry]
+name = "verpex"
+# Placeholder: the real version is derived from the latest git tag at build time by
+# poetry-dynamic-versioning (see [tool.poetry-dynamic-versioning] below).
+version = "0.0.0"
+description = "Deep-learning prediction of anatomical points-of-interest (POIs) on vertebrae from CT/MRI spine segmentations."
+authors = ["Hendrik Möller <hendrik.moeller@tum.de>"]
+license = "Apache-2.0"
+readme = "README.md"
+packages = [{ include = "verpex" }]
+include = [{ path = "verpex/configs/*.json" }, { path = "verpex/py.typed" }]
+
+[tool.poetry.dependencies]
+python = "^3.10 || ^3.11 || ^3.12"
+TPTBox = ">=0.8"
+TypeSaveArgParse = "*"
+torch = ">=2.1"
+pytorch-lightning = ">=2.1"
+monai = ">=1.3"
+numpy = ">=1.26"
+pandas = ">=2.0"
+scipy = ">=1.11"
+scikit-image = ">=0.21"
+scikit-learn = ">=1.4"
+nibabel = ">=5.1"
+PyYAML = ">=6.0"
+tqdm = "*"
+pqdm = "*"
+openpyxl = "*"
+einops = "*"
+tensorboard = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0"
+poetry-dynamic-versioning = ">=1.0.0,<2.0.0"
+ruff = ">=0.11"
+pre-commit = "*"
+coverage = ">=7.0"
+mypy = ">=1.8"
+pandas-stubs = "*"
+types-PyYAML = "*"
+
+[tool.poetry.group.extras.dependencies]
+# Sparse-convolution backbones (SubmDenseNet). CUDA-specific; not required for
+# the dense pipeline, so kept out of the default install.
+spconv-cu120 = "*"
+
+[tool.poetry.scripts]
+verpex-prepare-data = "verpex.cli.prepare_data:main"
+verpex-train = "verpex.cli.train:main"
+verpex-train-cv = "verpex.cli.train_cv:main"
+verpex-eval = "verpex.evaluation.metrics:main"
+verpex-infer = "verpex.cli.infer:main"
+
+[build-system]
+requires = ["poetry-core>=1.0.0", "poetry-dynamic-versioning>=1.0.0,<2.0.0"]
+build-backend = "poetry_dynamic_versioning.backend"
+
+[tool.poetry-dynamic-versioning]
+enable = true
+
+[tool.ruff]
+exclude = [".git", ".ruff_cache", ".venv", "venv", "build", "dist", "__pypackages__", "*.ipynb"]
+line-length = 140
+indent-width = 4
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W", "I", "N", "UP", "B", "A", "C4", "ICN", "G", "PIE", "PYI",
+    "SIM", "TID", "ARG", "D", "ANN201", "PD", "PGH", "PL", "TRY", "FLY", "NPY",
+    "PERF", "FURB", "RUF",
+]
+ignore = [
+    "E501",    # line length handled by the formatter
+    "BLE001",
+    "N801", "N802", "N803", "N806", "N999",
+    "NPY002",
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004",
+    "TRY003", "TRY301",
+    "SIM105", "SIM118",
+    "UP007",
+    "PLC0415",
+    # Rebinding a loop variable is this codebase's idiom for staged transforms
+    # (batch = to_device(batch); batch = model(batch)); renaming each stage hurts
+    # readability more than the shadowing costs.
+    "PLW2901",
+    "PLW0108",
+    "B905",
+    "D100",    # module docstring - covered per-package
+    "D104",    # package docstring
+    "D105",    # magic method
+    "D107",    # __init__ (covered by class docstring)
+    "D417",
+    "ANN202",
+    "RUF002",
+]
+fixable = ["ALL"]
+unfixable = []
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Re-exports in package __init__ files are intentional, not dead imports.
+"**/__init__.py" = ["F401"]
+"unit_tests/**" = ["D101", "D102", "D103", "D205", "D415", "ANN201", "ARG001"]
+# Largely a vendored copy of MONAI's affine transforms, kept close to upstream so it
+# stays diffable against it. The project's own transforms are at the top of the file
+# and are documented; MONAI's docstring and typing style is left as-is.
+"verpex/data/transforms.py" = [
+    "D101", "D102", "D103", "D205", "D415", "ANN201", "ARG002", "PGH003", "RUF012",
+    "N803", "N806", "UP035", "UP045", "RUF005", "B028", "C408",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 20
+
+[tool.pytest.ini_options]
+testpaths = ["unit_tests"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["verpex"]
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+# Third-party packages that ship no stubs and no py.typed marker.
+module = [
+    "TPTBox.*",
+    "TypeSaveArgParse.*",
+    "sklearn.*",
+    "spconv.*",
+    "monai.*",
+    "nibabel.*",
+    "skimage.*",
+    "scipy.*",
+    "pqdm.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Largely a vendored copy of MONAI's affine transforms, kept close to upstream so
+# it stays diffable against it - exempted here the same way it is for ruff.
+module = "verpex.data.transforms"
+ignore_errors = true

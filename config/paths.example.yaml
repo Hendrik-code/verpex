@@ -1,0 +1,25 @@
+# Machine-specific paths for verpex. Copy to config/paths.yaml and fill in.
+#
+#     cp config/paths.example.yaml config/paths.yaml
+#
+# config/paths.yaml is git-ignored and must never be committed.
+#
+# Every key can also be set through an environment variable, which takes
+# precedence over this file: data_root -> VERPEX_DATA_ROOT, and so on.
+# Keys left unset raise a PathConfigError naming exactly what to set.
+
+# Root holding the BIDS dataset(s) to read images and annotations from.
+data_root: /path/to/datasets
+
+# Where prepare_data writes per-vertebra cutouts and master_df.csv.
+cutout_root: /path/to/cutouts
+
+# Root holding trained model directories and their checkpoints.
+model_root: /path/to/models
+
+# Where evaluation and inference results are written.
+output_root: /path/to/results
+
+# Scratch space for intermediate files. Defaults to /tmp/verpex if unset,
+# so this is the one key you can usually leave commented out.
+# tmp_root: /tmp/verpex
