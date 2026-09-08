@@ -60,6 +60,12 @@ class PoiPredictionModule(pl.LightningModule):
         freeze_feature_extractor(): Freezes the feature extraction module.
     """
 
+    #: Registries the two stages are built from. A subclass targeting different anatomy
+    #: can point these at its own registries and inherit everything else; without them the
+    #: only way in is to reimplement __init__.
+    COARSE_MODULES = FEATURE_EXTRACTION_MODULES
+    REFINER_MODULES = REFINEMENT_MODULES
+
     def __init__(
         self,
         coarse_config,
@@ -74,8 +80,8 @@ class PoiPredictionModule(pl.LightningModule):
         super().__init__()
         if loss_weights is None:
             loss_weights = [1, 1]
-        self.feature_extraction_module = create_feature_extraction_module(coarse_config)
-        self.refinement_module = create_refinement_module(refinement_config)
+        self.feature_extraction_module = build(self.COARSE_MODULES, "feature extraction module", coarse_config)
+        self.refinement_module = build(self.REFINER_MODULES, "refinement module", refinement_config)
         self.lr = lr
         # Per-submodule LRs (fall back to the module-level lr). Honouring these
         # lets configs use a smaller LR for the transformer refiner (standard for

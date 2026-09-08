@@ -316,17 +316,19 @@ class HeatmapDenseNet(nn.Module):
         normalized_heatmaps = torch.softmax(normalized_heatmaps, dim=-1)
         normalized_heatmaps = normalized_heatmaps.view(B, N, *spatial_shape)
 
-        # Apply the heatmaps to the feature maps to get the feature encoding for each landmark
-        # Expand feature map dimensions from (B, F, H, W, D) to (B, 1, F, H, W, D) for broadcasting
-        feature_map_expanded = feature_map.unsqueeze(1)
-
-        # Perform weighted sum
-        # heatmaps_normalized is (B, N, H, W, D)
-        # feature_map_expanded is (B, 1, F, H, W, D)
-        # We want the output to be (B, N, F), summing over the spatial dimensions (H, W, D)
+        # Apply the heatmaps to the feature maps to get the feature encoding for each landmark:
+        # a (B, N, F) heatmap-weighted sum of the feature map over the spatial dimensions.
         if self.weight_features:
-            # weight the feature maps with the heatmaps
-            landmark_features = (normalized_heatmaps.unsqueeze(2).detach() * feature_map_expanded).sum(dim=(3, 4, 5))
+            # Contract straight to (B, N, F). Broadcasting (B, N, 1, H, W, D) against
+            # (B, 1, F, H, W, D) and summing computes the same thing, but materialises a
+            # (B, N, F, H, W, D) intermediate first - 20 MB per sample at N=35 and a
+            # 8x8x9 heatmap, but 5.6 GB at N=104 and 28x36x52, which is what makes larger
+            # landmark sets and the U-Net backbone run out of memory.
+            landmark_features = torch.einsum(
+                "bnv,bfv->bnf",
+                normalized_heatmaps.detach().flatten(2),
+                feature_map.flatten(2),
+            )
 
         else:
             # global average pooling of feature maps (no heatmap weighting)
@@ -449,9 +451,14 @@ class UNetHeatmapDenseNet(nn.Module):
         B, N, *spatial = heatmaps.shape
         normalized_heatmaps = torch.softmax(heatmaps.view(B, N, -1), dim=-1).view(B, N, *spatial)
 
-        feature_map_expanded = feature_map.unsqueeze(1)
         if self.weight_features:
-            landmark_features = (normalized_heatmaps.unsqueeze(2).detach() * feature_map_expanded).sum(dim=(3, 4, 5))
+            # See HeatmapDenseNet.forward: einsum avoids a (B, N, F, H, W, D) intermediate,
+            # which at this decoder's resolution would dominate the memory budget.
+            landmark_features = torch.einsum(
+                "bnv,bfv->bnf",
+                normalized_heatmaps.detach().flatten(2),
+                feature_map.flatten(2),
+            )
         else:
             global_features = feature_map.mean(dim=(2, 3, 4))
             landmark_features = global_features.unsqueeze(1).expand(-1, N, -1)
