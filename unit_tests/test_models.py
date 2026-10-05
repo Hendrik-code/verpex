@@ -153,9 +153,7 @@ def test_heatmap_densenet_landmark_features_do_not_backpropagate_into_the_heatma
     from verpex.models.densenet import HeatmapDenseNet
 
     torch.manual_seed(0)
-    model = HeatmapDenseNet(
-        spatial_dims=3, in_channels=1, n_landmarks=3, feature_l=4, init_features=8, growth_rate=4, block_config=(2, 2)
-    )
+    model = HeatmapDenseNet(spatial_dims=3, in_channels=1, n_landmarks=3, feature_l=4, init_features=8, growth_rate=4, block_config=(2, 2))
     heatmaps, landmark_features, _ = model(torch.randn(1, 1, 32, 32, 32))
     grad = torch.autograd.grad(landmark_features.sum(), heatmaps, allow_unused=True, retain_graph=True)[0]
     assert grad is None
