@@ -134,7 +134,7 @@ treat the names as a public interface: rename only deliberately, and update
 
 ## Releasing
 
-The version is not written in `pyproject.toml` — it is derived from the latest git
+The version is not written in `pyproject.toml` - it is derived from the latest git
 tag at build time by
 [poetry-dynamic-versioning](https://github.com/mtkennerly/poetry-dynamic-versioning).
 `version = "0.0.0"` is a placeholder.
@@ -146,3 +146,40 @@ git tag v0.1.0 && git push --tags
 Between tags the version reads as `0.1.0.post<n>.dev0+<sha>`. A repository with **no
 tags at all** builds as `0.0.0.post<n>.dev0+<sha>`, so tag once after the initial
 commit.
+
+Pushing a `v*` tag triggers `.github/workflows/python-publish.yml`, which builds an
+sdist and a wheel, runs `twine check` on them, and uploads to PyPI. The checkout in
+that workflow uses `fetch-depth: 0` because poetry-dynamic-versioning calls
+`git describe`: a clone that carries no tags builds as `0.0.0` without failing, so the
+mistake would only surface on PyPI.
+
+### One-time PyPI setup
+
+Publishing uses [Trusted Publishing](https://docs.pypi.org/trusted-publishers/), so
+there is no API token in the repository secrets. Before the first release, add a
+pending publisher at <https://pypi.org/manage/account/publishing/>:
+
+| Field | Value |
+| --- | --- |
+| PyPI project name | `verpex` |
+| Owner | `Hendrik-code` |
+| Repository name | `verpex` |
+| Workflow name | `python-publish.yml` |
+| Environment name | `pypi` |
+
+Then create a `pypi` environment under the repository's *Settings -> Environments*.
+Restricting it to tag pushes means a release cannot be published from a branch.
+
+### Coverage
+
+`tests.yml` runs the suite under `coverage` and uploads `coverage.xml` to Codecov
+from the Python 3.11 matrix entry. Add the repository at
+<https://app.codecov.io/gh/Hendrik-code/verpex> and store its upload token as the
+`CODECOV_TOKEN` repository secret. Thresholds live in `codecov.yml` and are
+informational, so a coverage drop annotates a pull request without blocking it.
+
+Locally:
+
+```bash
+coverage run -m pytest && coverage report
+```

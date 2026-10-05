@@ -35,7 +35,7 @@ pytest = ">=8.0"
 poetry-dynamic-versioning = ">=1.0.0,<2.0.0"
 ruff = ">=0.11"
 pre-commit = "*"
-coverage = ">=7.0"
+coverage = ">=7.2"
 mypy = ">=1.8"
 pandas-stubs = "*"
 types-PyYAML = "*"
@@ -119,6 +119,20 @@ max-complexity = 20
 
 [tool.pytest.ini_options]
 testpaths = ["unit_tests"]
+
+[tool.coverage.run]
+source = ["verpex"]
+branch = true
+# Vendored MONAI transforms - exempted here the same way they are for ruff and mypy.
+omit = ["verpex/data/transforms.py"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "@(abc\\.)?abstractmethod",
+]
 
 [tool.mypy]
 python_version = "3.10"

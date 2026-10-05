@@ -1,0 +1,22 @@
+# Coverage gates. Both are informational for now: Codecov reports the numbers on
+# every PR but does not fail the check, so the badge can go up before the suite
+# is broad enough to defend a hard threshold.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        informational: true
+    patch:
+      default:
+        target: auto
+        informational: true
+
+comment:
+  layout: "condensed_header, diff, files"
+  require_changes: true
+
+ignore:
+  - "unit_tests/**"
+  - "verpex/data/transforms.py"  # vendored MONAI, kept diffable against upstream

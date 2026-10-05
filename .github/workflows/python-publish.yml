@@ -1,0 +1,61 @@
+name: release_to_pypi
+
+# CONTRIBUTING.md documents releasing as `git tag vX.Y.Z && git push --tags`;
+# that tag push is what triggers this workflow. poetry-dynamic-versioning reads
+# the version straight off the tag, so nothing in the repo needs bumping.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # poetry-dynamic-versioning shells out to `git describe`, so the tag
+          # must be in the clone - a clone without tags silently builds 0.0.0.
+          # actions/checkout does fetch the triggering tag even at depth 1; the
+          # full history is what keeps the commit-distance part of development
+          # versions correct, and it is what upstream recommends.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Check metadata renders on PyPI
+        run: |
+          pip install twine
+          twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Trusted Publishing: PyPI verifies this workflow's OIDC identity, so there
+    # is no API token to store or rotate. Configure the publisher once at
+    # https://pypi.org/manage/account/publishing/ (see CONTRIBUTING.md).
+    environment:
+      name: pypi
+      url: https://pypi.org/p/verpex
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
