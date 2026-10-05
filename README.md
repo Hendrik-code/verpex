@@ -128,5 +128,9 @@ The test suite runs on synthetic tensors and needs no dataset. See
 If you use this codebase, please cite the following reference
 
 ```
-TBD [Paper not yet published]
+@inproceedings{moller26verpex,
+  title={VERPEX: Anatomical Landmark Extraction on 3D Vertebrae exploiting Segmentation Masks},
+  author={M{\"o}ller, Hendrik and Wang, Alissa Yuxuan and Graf, Robert and Nispel, Kati and Atad, Matan and Menze, Bjoern and Rueckert, Daniel and Kirschke, Jan and Lerchl, Tanja},
+  booktitle={2nd International Workshop on Digital Twin for Healthcare}
+}
 ```
