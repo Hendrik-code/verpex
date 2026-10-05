@@ -3,9 +3,11 @@
 </h1><br>
 
 [![Paper](https://img.shields.io/badge/Paper-DT4H%202026-B31B1B)](#citation)
+[![Stable Version](https://img.shields.io/pypi/v/verpex?label=stable)](https://pypi.python.org/pypi/verpex/)
 [![Python Versions](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org/downloads/)
 [![tests](https://github.com/Hendrik-code/verpex/actions/workflows/tests.yml/badge.svg)](https://github.com/Hendrik-code/verpex/actions/workflows/tests.yml)
 [![lint](https://github.com/Hendrik-code/verpex/actions/workflows/lint.yml/badge.svg)](https://github.com/Hendrik-code/verpex/actions/workflows/lint.yml)
+[![codecov](https://codecov.io/gh/Hendrik-code/verpex/graph/badge.svg)](https://codecov.io/gh/Hendrik-code/verpex)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Built on TPTBox](https://img.shields.io/badge/built%20on-TPTBox-4c8eda)](https://github.com/Hendrik-code/TPTBox)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)

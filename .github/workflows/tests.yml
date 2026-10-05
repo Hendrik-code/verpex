@@ -27,6 +27,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e .
-          pip install pytest
+          pip install pytest coverage
       - name: Test
-        run: python -m pytest -v
+        # Coverage settings (source, omissions) live in pyproject.toml.
+        run: |
+          coverage run -m pytest -v
+          coverage xml
+      - name: Upload coverage to Codecov
+        # One upload per commit is enough: the matrix differs only in interpreter
+        # version, not in which lines run.
+        if: matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # A Codecov outage should not turn the test suite red.
+          fail_ci_if_error: false
