@@ -28,7 +28,7 @@ from verpex.data.dataloading import (
 )
 from verpex.data.dataloading import get_files as _get_files
 from verpex.data.dataset import PoiDataset, PoiNeighborDataset, SpineDataset, SpineNeighborDataset
-from verpex.data.transforms import create_transform
+from verpex.data.transforms import create_transforms
 from verpex.registry import build
 
 
@@ -84,7 +84,7 @@ class POIDataModule(pl.LightningDataModule):
         input_shape: tuple = (128, 128, 96),
         zoom: tuple = (1, 1, 1),
         flip_prob: float = 0.5,
-        transform_config: dict | None = None,
+        transform_config: dict | list[dict] | None = None,
         include_com: bool = False,
         include_poi_list=None,
         include_vert_list=None,
@@ -178,7 +178,7 @@ class POIDataModule(pl.LightningDataModule):
 
         # Bound unconditionally: the datasets below always take a `transforms=`
         # argument, and `transform_config=None` is the declared default.
-        transform = [create_transform(self.transform_config)] if self.transform_config is not None else None
+        transform = create_transforms(self.transform_config)
 
         if self.dataset in SINGLE_VERTEBRA_DATASETS:
             self.train_dataset = SpineDataset(
@@ -345,7 +345,7 @@ class SpineDataModule(POIDataModule):
         input_shape: tuple = (128, 128, 96),
         zoom: tuple = (1, 1, 1),
         flip_prob: float = 0.5,
-        transform_config: dict | None = None,
+        transform_config: dict | list[dict] | None = None,
         include_com: bool = False,
         include_poi_list=None,
         include_vert_list=None,

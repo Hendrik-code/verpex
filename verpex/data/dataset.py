@@ -293,7 +293,10 @@ class PoiDataset(Dataset):
         missing_poi_list_idx = [self.poi_idx_to_list_idx[missing_poi.item()] for missing_poi in missing_pois]
         loss_mask[missing_poi_list_idx] = 0
 
-        data_dict["loss_mask"] = loss_mask.bool()
+        # A transform may have masked landmarks itself - a limited-FOV cut removes the
+        # anatomy a landmark sits on. Intersect rather than overwrite, or that is lost.
+        carried = data_dict.get("loss_mask")
+        data_dict["loss_mask"] = loss_mask.bool() if carried is None else (loss_mask.bool() & carried.bool())
 
         transformed_mask = mask
         if self.show_neighbors:
@@ -792,7 +795,10 @@ class PoiNeighborDataset(Dataset):
 
         combined_loss_mask[outside_poi_indices] = 0
 
-        data_dict["loss_mask"] = combined_loss_mask.bool()
+        # A transform may have masked landmarks itself - a limited-FOV cut removes the
+        # anatomy a landmark sits on. Intersect rather than overwrite, or that is lost.
+        carried = data_dict.get("loss_mask")
+        data_dict["loss_mask"] = combined_loss_mask.bool() if carried is None else (combined_loss_mask.bool() & carried.bool())
 
         transformed_mask = torch.from_numpy(mask)
         surface = compute_surface(transformed_mask, iterations=self.iterations)

@@ -113,3 +113,49 @@ def test_patch_centres_are_rounded_not_truncated():
     patches = extractor.extract_patches(volume, torch.tensor([[[24.6, 24.6, 24.6]]]))
     centre = patches.shape[-1] // 2
     assert patches[0, 0, 0, centre, centre, centre] == 1.0
+
+
+@pytest.mark.parametrize("weight_features", [True, False])
+def test_heatmap_densenet_landmark_features_match_the_broadcast_formulation(weight_features):
+    """The einsum contraction must equal the (B, N, F, H, W, D) broadcast it replaced.
+
+    The broadcast is the readable definition; the einsum is the one that fits in memory
+    once ``n_landmarks`` or the heatmap resolution grows. Only the memory profile may
+    differ, never the numbers.
+    """
+    from verpex.models.densenet import HeatmapDenseNet
+
+    torch.manual_seed(0)
+    model = HeatmapDenseNet(
+        spatial_dims=3,
+        in_channels=1,
+        n_landmarks=5,
+        feature_l=7,
+        init_features=8,
+        growth_rate=4,
+        block_config=(2, 2),
+        weight_features=weight_features,
+    ).eval()
+
+    with torch.no_grad():
+        heatmaps, landmark_features, feature_map = model(torch.randn(2, 1, 32, 32, 32))
+
+    if weight_features:
+        expected = (heatmaps.unsqueeze(2) * feature_map.unsqueeze(1)).sum(dim=(3, 4, 5))
+    else:
+        expected = feature_map.mean(dim=(2, 3, 4)).unsqueeze(1).expand(-1, heatmaps.shape[1], -1)
+    assert landmark_features.shape == (2, 5, 7)
+    assert torch.allclose(landmark_features, expected, atol=1e-5)
+
+
+def test_heatmap_densenet_landmark_features_do_not_backpropagate_into_the_heatmaps():
+    """The weighting is detached, so the feature encoding must not carry heatmap grads."""
+    from verpex.models.densenet import HeatmapDenseNet
+
+    torch.manual_seed(0)
+    model = HeatmapDenseNet(
+        spatial_dims=3, in_channels=1, n_landmarks=3, feature_l=4, init_features=8, growth_rate=4, block_config=(2, 2)
+    )
+    heatmaps, landmark_features, _ = model(torch.randn(1, 1, 32, 32, 32))
+    grad = torch.autograd.grad(landmark_features.sum(), heatmaps, allow_unused=True, retain_graph=True)[0]
+    assert grad is None

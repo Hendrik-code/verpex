@@ -56,6 +56,8 @@ from monai.utils import (
 from monai.utils.enums import TraceKeys, TransformBackends
 from monai.utils.type_conversion import convert_data_type, get_equivalent_dtype
 
+from verpex.registry import build
+
 
 class LandmarksRandAffine:
     def __init__(
@@ -205,6 +207,421 @@ class LandMarksRandHorizontalFlipNeighbor:
         return dd
 
 
+def _sample_generator(seed, dd, index_key):
+    """Return a per-sample RNG, or ``None`` to draw from the global one.
+
+    Seeding from the sample's own index is what makes an evaluation-time augmentation
+    repeatable: ``worker_init_fn`` reseeds workers from ``torch.initial_seed()``, which
+    Lightning advances every epoch, so the global RNG cannot give a sample the same draw
+    twice.
+    """
+    if seed is None:
+        return None
+    index = dd.get(index_key, 0)
+    if torch.is_tensor(index):
+        index = int(index.item())
+    generator = torch.Generator()
+    generator.manual_seed((int(seed) * 1_000_003 + int(index)) % (2**63 - 1))
+    return generator
+
+
+def _rand(generator=None) -> float:
+    """Draw one uniform in ``[0, 1)`` from ``generator``, or from the global RNG."""
+    return float(torch.rand(1, generator=generator).item())
+
+
+def _uniform(low: float, high: float, generator=None) -> float:
+    """Draw one uniform in ``[low, high)``."""
+    return low + (high - low) * _rand(generator)
+
+
+def _resolve_channel(dd, key, default):
+    """Read a channel index the sample may carry, falling back to a configured default.
+
+    The stack order depends on which channels were requested, so the dataset is the only
+    thing that reliably knows where the label map sits; a hardcoded index is silently
+    wrong for some ``input_data_type`` values.
+    """
+    channel = dd.get(key, default)
+    if torch.is_tensor(channel):
+        channel = int(channel.item())
+    return int(channel)
+
+
+def _shift_volume(volume, delta):
+    """Translate ``volume`` by ``delta`` voxels along its spatial axes, padding with zeros.
+
+    Deliberately not ``torch.roll``: rolling is circular, so anatomy cut off one face would
+    reappear on the opposite one and the landmark coordinate would land back *inside* the
+    volume on the wrong structure - a corruption no bounds check can catch.
+
+    Returns:
+        ``(shifted, True)``, or ``(volume, False)`` if a shift would empty the volume.
+    """
+    shifted = torch.zeros_like(volume)
+    src: list = [slice(None)]
+    dst: list = [slice(None)]
+    for axis, size in enumerate(volume.shape[1:]):
+        step = int(delta[axis])
+        if abs(step) >= size:
+            return volume, False
+        src.append(slice(max(0, -step), size - max(0, step)))
+        dst.append(slice(max(0, step), size - max(0, -step)))
+    shifted[tuple(dst)] = volume[tuple(src)]
+    return shifted, True
+
+
+def _intersect_loss_mask(dd, keep):
+    """Fold ``keep`` into ``dd['loss_mask']``, creating the key if the sample has none."""
+    carried = dd.get("loss_mask")
+    dd["loss_mask"] = keep if carried is None else (carried.bool() & keep)
+
+
+class LandmarksRandLimitedFov:
+    """Truncate the volume the way a limited scanner field of view does, then re-centre.
+
+    A cutout is centred offline on the bounding-box centre of its segmentation, and
+    inference runs the same code - so on a scan whose field of view stops mid-thorax the
+    box is centred on whatever anatomy is *visible*, and the content sits quite differently
+    from any untruncated training sample. This reproduces that: zero one or more
+    axis-aligned slabs, recompute the bounding-box centre of what survives, and shift the
+    fixed-size box back onto it. Landmarks in the removed slabs are unsupervised.
+
+    The spatial shape never changes, so the model's input size is unaffected.
+
+    Args:
+        prob: Per spatial axis, the probability that axis is cut at all. Axis order is the
+            volume's own, i.e. ``dd["input"]`` dim ``axis + 1``.
+        cut_range: Per axis, the ``(low, high)`` fraction of the axis removed per cut side.
+        both_sides_prob: Given an axis is cut, the probability both ends are cut rather
+            than one.
+        min_keep_fraction: Floor on the surviving extent of an axis, as a fraction.
+        min_visible_landmarks: Resample the cut if fewer supervised landmarks than this
+            would survive; after ``max_attempts`` the sample is left untouched.
+        max_attempts: Bound on that resampling.
+        recentre: Whether to shift the surviving content back to the volume centre.
+        label_channel: Channel of ``dd["input"]`` holding the instance-label map, used for
+            the bounding box. Overridden per sample by ``dd[label_channel_key]``.
+        label_channel_key: Sample key carrying that channel index.
+        seed: When set, the cut is a pure function of ``seed`` and ``dd[index_key]``, so a
+            sample gets the same field of view in every epoch. Leave ``None`` for training.
+        index_key: Sample key carrying the dataset index.
+
+    Raises:
+        ValueError: If the ranges are malformed, which would otherwise degrade silently.
+    """
+
+    def __init__(
+        self,
+        prob=(0.25, 0.10, 0.60),
+        cut_range=((0.05, 0.30), (0.05, 0.20), (0.10, 0.45)),
+        both_sides_prob: float = 0.35,
+        min_keep_fraction: float = 0.25,
+        min_visible_landmarks: int = 16,
+        max_attempts: int = 8,
+        recentre: bool = True,
+        label_channel: int = -1,
+        label_channel_key: str = "label_channel",
+        seed: int | None = None,
+        index_key: str = "sample_index",
+    ):
+        prob = tuple(float(p) for p in prob)
+        cut_range = tuple((float(low), float(high)) for low, high in cut_range)
+        if len(prob) != 3 or len(cut_range) != 3:
+            raise ValueError(f"prob and cut_range need one entry per spatial axis; got {len(prob)} and {len(cut_range)}.")
+        if any(not 0.0 <= p <= 1.0 for p in prob):
+            raise ValueError(f"prob entries must lie in [0, 1]; got {prob}.")
+        if any(not 0.0 <= low <= high < 0.5 for low, high in cut_range):
+            raise ValueError(f"cut_range entries must satisfy 0 <= low <= high < 0.5; got {cut_range}.")
+        if not 0.0 <= both_sides_prob <= 1.0:
+            raise ValueError(f"both_sides_prob must lie in [0, 1]; got {both_sides_prob}.")
+        if not 0.0 < min_keep_fraction <= 1.0:
+            raise ValueError(f"min_keep_fraction must lie in (0, 1]; got {min_keep_fraction}.")
+        if max_attempts < 1:
+            raise ValueError(f"max_attempts must be at least 1; got {max_attempts}.")
+
+        self.prob = prob
+        self.cut_range = cut_range
+        self.both_sides_prob = both_sides_prob
+        self.min_keep_fraction = min_keep_fraction
+        self.min_visible_landmarks = min_visible_landmarks
+        self.max_attempts = max_attempts
+        self.recentre = recentre
+        self.label_channel = label_channel
+        self.label_channel_key = label_channel_key
+        self.seed = seed
+        self.index_key = index_key
+
+    def _clamp(self, frac_low: float, frac_high: float) -> tuple[float, float]:
+        """Scale both cut depths down proportionally until enough of the axis survives."""
+        total = frac_low + frac_high
+        excess = total - (1.0 - self.min_keep_fraction)
+        if total <= 0.0 or excess <= 0.0:
+            return frac_low, frac_high
+        return frac_low - excess * (frac_low / total), frac_high - excess * (frac_high / total)
+
+    def _sample_box(self, shape, generator):
+        """Sample the slab to keep, or ``None`` when no axis was cut."""
+        low = [0, 0, 0]
+        high = list(shape)
+        cut_any = False
+        for axis in range(3):
+            if _rand(generator) >= self.prob[axis]:
+                continue
+            range_low, range_high = self.cut_range[axis]
+            both = _rand(generator) < self.both_sides_prob
+            cut_low = both or _rand(generator) < 0.5
+            frac_low = _uniform(range_low, range_high, generator) if cut_low else 0.0
+            frac_high = _uniform(range_low, range_high, generator) if (both or not cut_low) else 0.0
+            frac_low, frac_high = self._clamp(frac_low, frac_high)
+            size = shape[axis]
+            new_low = round(frac_low * size)
+            new_high = size - round(frac_high * size)
+            if new_high - new_low < 1 or (new_low == 0 and new_high == size):
+                continue
+            low[axis], high[axis] = new_low, new_high
+            cut_any = True
+        return (low, high) if cut_any else None
+
+    @staticmethod
+    def _inside(target, low, high):
+        """Boolean per landmark: does it lie in the half-open keep box."""
+        low_t = torch.as_tensor(low, dtype=target.dtype, device=target.device)
+        high_t = torch.as_tensor(high, dtype=target.dtype, device=target.device)
+        return torch.all((target >= low_t) & (target < high_t), dim=1)
+
+    def __call__(self, dd: dict) -> dict:
+        """Cut, re-centre and re-mask ``dd``; return it untouched when nothing was cut."""
+        volume = dd["input"]
+        target = dd["target"]
+        shape = tuple(volume.shape[1:])
+        generator = _sample_generator(self.seed, dd, self.index_key)
+        carried = dd.get("loss_mask")
+
+        for _ in range(self.max_attempts):
+            box = self._sample_box(shape, generator)
+            if box is None:
+                # No slab sampled. Returning early matters: re-centring here would undo the
+                # affine's deliberate off-centre translation on every such sample.
+                return dd
+            low, high = box
+            visible = self._inside(target, low, high)
+            survivors = visible if carried is None else (visible & carried.bool())
+            if int(survivors.sum()) >= self.min_visible_landmarks:
+                break
+        else:
+            return dd
+
+        cropped = torch.zeros_like(volume)
+        keep = (slice(None), slice(low[0], high[0]), slice(low[1], high[1]), slice(low[2], high[2]))
+        cropped[keep] = volume[keep]
+
+        delta = torch.zeros(3, dtype=torch.long)
+        if self.recentre:
+            channel = _resolve_channel(dd, self.label_channel_key, self.label_channel)
+            # round() because an affine resamples in float: a label of 43 comes back as
+            # 43.000004 and a bare `> 0` on the raw values would still be right, but the
+            # bounding box must not pick up interpolation dust from a zero background.
+            indices = torch.nonzero(cropped[channel].round() > 0)
+            if indices.numel() == 0:
+                return dd  # the cut removed every label; a sample with no anatomy teaches nothing
+            centre = (indices.amin(0) + indices.amax(0)) // 2
+            delta = torch.as_tensor(shape) // 2 - centre
+
+        shifted, shifted_ok = _shift_volume(cropped, delta)
+        if not shifted_ok:
+            return dd
+        target = target + delta.to(target.dtype)
+
+        limits = torch.as_tensor(shape, dtype=target.dtype, device=target.device) - 1
+        visible = visible & torch.all((target >= 0) & (target <= limits), dim=1)
+
+        dd["input"] = shifted
+        dd["target"] = target
+        _intersect_loss_mask(dd, visible)
+        return dd
+
+
+class LandmarksRandLabelDropout:
+    """Delete whole instance labels from the input and unsupervise their landmarks.
+
+    A segmentation that misses a structure entirely is a common upstream failure, and it
+    clusters at the ends of an ordered label range - the first and last ribs, the topmost
+    and bottommost vertebrae - rather than falling uniformly, which is what ``end_bias``
+    encodes.
+
+    Args:
+        prob: Probability of dropping anything at all.
+        n_labels: Inclusive ``(min, max)`` number of labels to drop. Never all of them.
+        contiguous: Drop a run of neighbouring labels rather than a random subset.
+        end_bias: Probability that a contiguous run starts at one end of the label range.
+        label_channel: Channel holding the instance-label map; overridden per sample by
+            ``dd[label_channel_key]``.
+        label_channel_key: Sample key carrying that channel index.
+        landmark_labels_key: Sample key mapping each landmark to the label it sits on. When
+            absent, the volume is still edited but no landmark is unsupervised - so the
+            dataset must either supply it or re-derive the mask itself.
+        seed: When set, the draw is a pure function of ``seed`` and ``dd[index_key]``.
+        index_key: Sample key carrying the dataset index.
+
+    Raises:
+        ValueError: If ``prob``, ``end_bias`` or ``n_labels`` are malformed.
+    """
+
+    def __init__(
+        self,
+        prob: float = 0.3,
+        n_labels=(1, 3),
+        contiguous: bool = True,
+        end_bias: float = 0.7,
+        label_channel: int = -1,
+        label_channel_key: str = "label_channel",
+        landmark_labels_key: str = "landmark_labels",
+        seed: int | None = None,
+        index_key: str = "sample_index",
+    ):
+        n_labels = (int(n_labels[0]), int(n_labels[1]))
+        if not 0.0 <= prob <= 1.0:
+            raise ValueError(f"prob must lie in [0, 1]; got {prob}.")
+        if not 0.0 <= end_bias <= 1.0:
+            raise ValueError(f"end_bias must lie in [0, 1]; got {end_bias}.")
+        if not 1 <= n_labels[0] <= n_labels[1]:
+            raise ValueError(f"n_labels must satisfy 1 <= min <= max; got {n_labels}.")
+
+        self.prob = prob
+        self.n_labels = n_labels
+        self.contiguous = contiguous
+        self.end_bias = end_bias
+        self.label_channel = label_channel
+        self.label_channel_key = label_channel_key
+        self.landmark_labels_key = landmark_labels_key
+        self.seed = seed
+        self.index_key = index_key
+
+    def _choose(self, present, generator):
+        """Pick which of the ``present`` labels to delete, as a list of label values."""
+        n_present = int(present.numel())
+        # Never delete every label: an input with no anatomy has nothing to learn from.
+        high = min(self.n_labels[1], n_present - 1)
+        if high < 1:
+            return []
+        low = min(self.n_labels[0], high)
+        count = max(low, min(high, int(_uniform(low, high + 1, generator))))
+
+        if not self.contiguous:
+            order = torch.randperm(n_present, generator=generator)
+            return present[order[:count]].tolist()
+
+        if _rand(generator) < self.end_bias:
+            start = 0 if _rand(generator) < 0.5 else n_present - count
+        else:
+            start = int(_uniform(0, n_present - count + 1, generator))
+        start = max(0, min(start, n_present - count))
+        return present[start : start + count].tolist()
+
+    def __call__(self, dd: dict) -> dict:
+        """Delete a run of labels from every channel of ``dd['input']``, with probability ``prob``."""
+        generator = _sample_generator(self.seed, dd, self.index_key)
+        if _rand(generator) >= self.prob:
+            return dd
+
+        volume = dd["input"]
+        channel = _resolve_channel(dd, self.label_channel_key, self.label_channel)
+        labels = volume[channel].round()
+        present = torch.unique(labels)
+        present = present[present > 0].sort().values
+        if present.numel() == 0:
+            return dd
+
+        chosen = self._choose(present, generator)
+        if not chosen:
+            return dd
+
+        chosen_t = torch.as_tensor(chosen, dtype=labels.dtype, device=labels.device)
+        drop = torch.isin(labels, chosen_t)
+        if not bool(drop.any()):
+            return dd
+        # Every channel, not just the label map: a field of view that lost a rib lost its
+        # surface and its intensities too.
+        dd["input"] = volume.masked_fill(drop.unsqueeze(0), 0.0)
+
+        landmark_labels = dd.get(self.landmark_labels_key)
+        if landmark_labels is not None:
+            gone = torch.isin(landmark_labels, chosen_t.to(landmark_labels.dtype))
+            _intersect_loss_mask(dd, ~gone)
+        return dd
+
+
+class RandLabelCollapse:
+    """Replace instance labels with one value, so identity cannot be read off the input.
+
+    A label map fed to the network as raw values hands it the instance identity directly.
+    Collapsing it to a binary mask forces the model to localise from geometry instead,
+    which is what it has to do whenever the upstream segmentation mislabels.
+
+    This edits ``dd["input"]`` only and belongs in an image-only pipeline, run *after* any
+    bookkeeping copy of the label map has been split off - collapsing the map a loss mask
+    is derived from would unsupervise almost everything.
+
+    Args:
+        prob: Probability of collapsing a given sample.
+        value: The value every non-zero label becomes.
+        channels: Channels of ``dd["input"]`` to collapse. When ``None`` the sample must
+            carry ``dd[channels_key]``.
+        channels_key: Sample key listing those channels.
+        seed: When set, the draw is a pure function of ``seed`` and ``dd[index_key]``.
+        index_key: Sample key carrying the dataset index.
+
+    Raises:
+        ValueError: If ``prob`` is not a probability.
+    """
+
+    def __init__(
+        self,
+        prob: float = 0.3,
+        value: float = 1.0,
+        channels=None,
+        channels_key: str = "input_label_channels",
+        seed: int | None = None,
+        index_key: str = "sample_index",
+    ):
+        if not 0.0 <= prob <= 1.0:
+            raise ValueError(f"prob must lie in [0, 1]; got {prob}.")
+        self.prob = prob
+        self.value = float(value)
+        self.channels = None if channels is None else [int(c) for c in channels]
+        self.channels_key = channels_key
+        self.seed = seed
+        self.index_key = index_key
+
+    def __call__(self, dd: dict) -> dict:
+        """Binarise the label channels of ``dd['input']`` with probability ``prob``.
+
+        Raises:
+            KeyError: If no channels were configured and the sample names none, which would
+                otherwise make the transform a silent no-op for a whole training run.
+        """
+        generator = _sample_generator(self.seed, dd, self.index_key)
+        if _rand(generator) >= self.prob:
+            return dd
+
+        channels = self.channels if self.channels is not None else dd.get(self.channels_key)
+        if channels is None:
+            raise KeyError(
+                f"RandLabelCollapse needs the label channels: pass channels=... or have the dataset set dd[{self.channels_key!r}]."
+            )
+        if torch.is_tensor(channels):
+            channels = channels.tolist()
+
+        volume = dd["input"]
+        collapsed = volume.clone()
+        for channel in channels:
+            index = int(channel)
+            collapsed[index] = (volume[index] > 0).to(volume.dtype) * self.value
+        dd["input"] = collapsed
+        return dd
+
+
 class Compose:
     def __init__(self, transforms):
         # `None` entries are dropped rather than rejected: callers compose an
@@ -217,15 +634,52 @@ class Compose:
         return dd
 
 
-def create_transform(config):
-    transform_type = config["type"]
+#: Config ``"type"`` string -> transform class. A project that needs its own variants
+#: builds a new dict from this one and passes it to the factories below; see
+#: ``rib_poi.data.transforms.RIB_TRANSFORMS``.
+TRANSFORMS = {
+    "LandmarksRandAffine": LandmarksRandAffine,
+    "LandMarksRandHorizontalFlip": LandMarksRandHorizontalFlip,
+    "LandMarksRandHorizontalFlipNeighbor": LandMarksRandHorizontalFlipNeighbor,
+    "LandmarksRandLimitedFov": LandmarksRandLimitedFov,
+    "LandmarksRandLabelDropout": LandmarksRandLabelDropout,
+    "RandLabelCollapse": RandLabelCollapse,
+}
 
-    if transform_type == "LandmarksRandAffine":
-        return LandmarksRandAffine(**config["params"])
-    elif transform_type == "LandMarksRandHorizontalFlip":
-        return LandMarksRandHorizontalFlip(**config["params"])
-    else:
-        raise ValueError(f"Unknown transform type: {transform_type}")
+
+def create_transform(config, registry=None):
+    """Build one transform from a ``{"type", "params"}`` config.
+
+    Args:
+        config: The config mapping.
+        registry: Name-to-class mapping to resolve against; :data:`TRANSFORMS` by default.
+
+    Returns:
+        The constructed transform.
+
+    Raises:
+        UnknownTypeError: If the config names a transform that is not registered. The
+            previous hand-written factory raised a bare ``ValueError`` and could only
+            reach two of the classes in this module.
+    """
+    return build(TRANSFORMS if registry is None else registry, "transform", config)
+
+
+def create_transforms(config, registry=None):
+    """Build a transform pipeline from ``None``, one config, or a list of configs.
+
+    Args:
+        config: ``None``, a single ``{"type", "params"}`` mapping, or a list of them.
+        registry: Name-to-class mapping to resolve against; :data:`TRANSFORMS` by default.
+
+    Returns:
+        A list of transforms, or ``None`` when there is nothing to build - so the result
+        can be passed straight to a dataset's ``transforms=`` argument either way.
+    """
+    if config is None:
+        return None
+    configs = [config] if isinstance(config, dict) else list(config)
+    return [create_transform(entry, registry) for entry in configs] or None
 
 
 """
